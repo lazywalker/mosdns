@@ -67,7 +67,7 @@ func (p *rosAddrlistPlugin) Exec(ctx context.Context, qCtx *query_context.Contex
 	r := qCtx.R()
 	if r != nil {
 		if err := p.addIP(r); err != nil {
-			return fmt.Errorf("ros_addrlist addip failed but ignored: %w", err)
+			return fmt.Errorf("addip failed but ignored: %w", err)
 		}
 	}
 	return nil
@@ -104,10 +104,16 @@ func (p *rosAddrlistPlugin) addIPViaHTTPRequest(ip *net.IP, v6 bool, from string
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	// case http.StatusOK:
-	// 	return fmt.Errorf("OK: %d - %s - %s", resp.StatusCode, ip, from)
+	case http.StatusOK:
+		// return fmt.Errorf("OK: %d - %s - %s", resp.StatusCode, ip, from)
+		// success
+		return nil
 	case http.StatusBadRequest:
-		return fmt.Errorf("bad request code: %d - %s - %s", resp.StatusCode, ip, from)
+		// return fmt.Errorf("bad request code: %d - %s - %s", resp.StatusCode, ip, from)
+		// likely the ip already exists in the addrlist, ignore
+		return nil
+	case http.StatusUnauthorized:
+		return fmt.Errorf("unauthorized code: %d - %s - %s", resp.StatusCode, ip, from)
 	case http.StatusInternalServerError:
 		return fmt.Errorf("internal server error code: %d - %s - %s", resp.StatusCode, ip, from)
 	default:
@@ -156,7 +162,7 @@ func (p *rosAddrlistPlugin) Close() error {
 
 // QuickSetup format: [set_name,{inet|inet6},mask] *2
 // e.g. "http://192.168.111.1:8080,admin,password,gfwlist,inet,24"
-func QuickSetup(_ sequence.BQ, s string) (any, error) {
+func QuickSetup(bq sequence.BQ, s string) (any, error) {
 	fs := strings.Fields(s)
 	if len(fs) > 6 {
 		return nil, fmt.Errorf("expect no more than 6 fields, got %d", len(fs))
