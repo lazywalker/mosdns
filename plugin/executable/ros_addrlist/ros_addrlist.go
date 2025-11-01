@@ -17,6 +17,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 )
 
 const PluginType = "ros_addrlist"
@@ -37,9 +38,10 @@ type Args struct {
 type rosAddrlistPlugin struct {
 	args   *Args
 	client *http.Client
+	logger *zap.Logger
 }
 
-func newRosAddrlistPlugin(args *Args) (*rosAddrlistPlugin, error) {
+func newRosAddrlistPlugin(args *Args, logger *zap.Logger) (*rosAddrlistPlugin, error) {
 	if args.Mask4 == 0 {
 		args.Mask4 = 24
 	}
@@ -60,6 +62,7 @@ func newRosAddrlistPlugin(args *Args) (*rosAddrlistPlugin, error) {
 	return &rosAddrlistPlugin{
 		args:   args,
 		client: client,
+		logger: logger,
 	}, nil
 }
 
@@ -105,10 +108,12 @@ func (p *rosAddrlistPlugin) addIPViaHTTPRequest(ip *net.IP, v6 bool, from string
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		p.logger.Info("added ip to ros addrlist", zap.String("ip", ip.String()), zap.String("domain", from))
 		// return fmt.Errorf("OK: %d - %s - %s", resp.StatusCode, ip, from)
 		// success
 		return nil
 	case http.StatusBadRequest:
+		p.logger.Info("likely ip already exists", zap.String("ip", ip.String()), zap.String("domain", from))
 		// return fmt.Errorf("bad request code: %d - %s - %s", resp.StatusCode, ip, from)
 		// likely the ip already exists in the addrlist, ignore
 		return nil
@@ -194,5 +199,6 @@ func QuickSetup(bq sequence.BQ, s string) (any, error) {
 			return nil, fmt.Errorf("invalid set family, %s", ss[0])
 		}
 	}
-	return newRosAddrlistPlugin(args)
+
+	return newRosAddrlistPlugin(args, bq.L())
 }
