@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/netip"
 
-	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
@@ -68,7 +67,7 @@ func (p *rosAddrlistPlugin) Exec(ctx context.Context, qCtx *query_context.Contex
 	r := qCtx.R()
 	if r != nil {
 		if err := p.addIP(r); err != nil {
-			mlog.S().Errorf("ros_addrlist addip failed but ignored: %w", err)
+			return fmt.Errorf("ros_addrlist addip failed but ignored: %w", err)
 		}
 	}
 	return nil
@@ -88,37 +87,33 @@ func (p *rosAddrlistPlugin) addIPViaHTTPRequest(ip *net.IP, v6 bool, from string
 	}
 	jsonData, err := json.Marshal(payload)
 	if err != nil {
-		mlog.S().Errorf("ros_addrlist failed to marshal json data: %w", err)
-		return err
+		return fmt.Errorf("failed to marshal json data: %w", err)
 	}
 
 	req, err := http.NewRequest("POST", routerURL, bytes.NewBuffer(jsonData))
 	if err != nil {
-		mlog.S().Errorf("ros_addrlist failed to create http request: %w", err)
-		return err
+		return fmt.Errorf("failed to create http request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.SetBasicAuth(p.args.User, p.args.Passwd)
 
 	resp, err := p.client.Do(req)
 	if err != nil {
-		mlog.S().Errorf("ros_addrlist failed to execute http request: %w", err)
-		return err
+		return fmt.Errorf("failed to execute http request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	switch resp.StatusCode {
-	case http.StatusOK:
-		mlog.S().Infof("ros_addrlist OK: %d - %s - %s", resp.StatusCode, ip, from)
+	// case http.StatusOK:
+	// 	return fmt.Errorf("OK: %d - %s - %s", resp.StatusCode, ip, from)
 	case http.StatusBadRequest:
-		mlog.S().Warnf("ros_addrlist BadRequest code: %d - %s - %s", resp.StatusCode, ip, from)
+		return fmt.Errorf("bad request code: %d - %s - %s", resp.StatusCode, ip, from)
 	case http.StatusInternalServerError:
-		mlog.S().Errorf("ros_addrlist InternalServerError code: %d - %s - %s", resp.StatusCode, ip, from)
+		return fmt.Errorf("internal server error code: %d - %s - %s", resp.StatusCode, ip, from)
 	default:
-		mlog.S().Errorf("ros_addrlist Unexpected Status code: %d - %s - %s", resp.StatusCode, ip, from)
+		return fmt.Errorf("unexpected status code: %d - %s - %s", resp.StatusCode, ip, from)
 	}
 
-	return nil
 }
 
 func (p *rosAddrlistPlugin) addIP(r *dns.Msg) error {
@@ -130,11 +125,10 @@ func (p *rosAddrlistPlugin) addIP(r *dns.Msg) error {
 			}
 			_, ok := netip.AddrFromSlice(rr.A.To4())
 			if !ok {
-				return fmt.Errorf("ros_addrlist invalid A record with ip: %s", rr.A)
+				return fmt.Errorf("invalid A record with ip: %s", rr.A)
 			}
 			if err := p.addIPViaHTTPRequest(&rr.A, false, r.Question[0].Name); err != nil {
-				mlog.S().Errorf("ros_addrlist failed to add ip: %s, %v", rr.A, err)
-				return err
+				return fmt.Errorf("failed to add ip: %s: %v", rr.A, err)
 			}
 
 		case *dns.AAAA:
@@ -143,13 +137,10 @@ func (p *rosAddrlistPlugin) addIP(r *dns.Msg) error {
 			}
 			_, ok := netip.AddrFromSlice(rr.AAAA.To16())
 			if !ok {
-				err := fmt.Errorf("ros_addrlist invalid AAAA record with ip: %s", rr.AAAA)
-				mlog.S().Error(err)
-				return err
+				return fmt.Errorf("invalid AAAA record with ip: %s", rr.AAAA)
 			}
 			if err := p.addIPViaHTTPRequest(&rr.AAAA, true, r.Question[0].Name); err != nil {
-				mlog.S().Errorf("ros_addrlist failed to add ip: %s, %v", rr.AAAA, err)
-				return err
+				return fmt.Errorf("failed to add ip: %s, %v", rr.AAAA, err)
 			}
 		default:
 			continue
@@ -168,24 +159,19 @@ func (p *rosAddrlistPlugin) Close() error {
 func QuickSetup(_ sequence.BQ, s string) (any, error) {
 	fs := strings.Fields(s)
 	if len(fs) > 6 {
-		err := fmt.Errorf("expect no more than 6 fields, got %d", len(fs))
-		mlog.S().Error(err)
-		return nil, err
+		return nil, fmt.Errorf("expect no more than 6 fields, got %d", len(fs))
 	}
 
 	args := new(Args)
 	for _, argsStr := range fs {
 		ss := strings.Split(argsStr, ",")
 		if len(ss) != 6 {
-			err := fmt.Errorf("ros_addrlist invalid args, expect 6 fields, got %d", len(ss))
-			mlog.S().Error(err)
-			return nil, err
+			return nil, fmt.Errorf("invalid args, expect 6 fields, got %d", len(ss))
 		}
 
 		m, err := strconv.Atoi(ss[5])
 		if err != nil {
-			mlog.S().Errorf("ros_addrlist invalid mask, %w", err)
-			return nil, err
+			return nil, fmt.Errorf("invalid mask, %w", err)
 		}
 		args.Mask4 = m
 
@@ -199,8 +185,7 @@ func QuickSetup(_ sequence.BQ, s string) (any, error) {
 		case "inet6":
 			args.Mask6 = m
 		default:
-			mlog.S().Errorf("ros_addrlist invalid set family, %s", ss[0])
-			return nil, err
+			return nil, fmt.Errorf("invalid set family, %s", ss[0])
 		}
 	}
 	return newRosAddrlistPlugin(args)
