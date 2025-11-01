@@ -21,16 +21,18 @@ package coremain
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"runtime"
+	"strings"
+	"syscall"
+
 	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/kardianos/service"
 	"github.com/mitchellh/mapstructure"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"go.uber.org/zap"
-	"os"
-	"os/signal"
-	"runtime"
-	"syscall"
 )
 
 type serverFlags struct {
@@ -133,13 +135,16 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 // automatically search and load a file which name start with "config".
 func loadConfig(filePath string) (*Config, string, error) {
 	v := viper.New()
-
 	if len(filePath) > 0 {
 		v.SetConfigFile(filePath)
 	} else {
 		v.SetConfigName("config")
 		v.AddConfigPath(".")
 	}
+
+	// Enable automatic environment variable overriding
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
 
 	if err := v.ReadInConfig(); err != nil {
 		return nil, "", fmt.Errorf("failed to read config: %w", err)
@@ -155,5 +160,6 @@ func loadConfig(filePath string) (*Config, string, error) {
 	if err := v.Unmarshal(cfg, decoderOpt); err != nil {
 		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+
 	return cfg, v.ConfigFileUsed(), nil
 }

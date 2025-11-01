@@ -113,7 +113,7 @@ func (p *rosAddrlistPlugin) addIPViaHTTPRequest(ip *net.IP, v6 bool, from string
 		// success
 		return nil
 	case http.StatusBadRequest:
-		p.logger.Info("likely ip already exists", zap.String("ip", ip.String()), zap.String("domain", from))
+		p.logger.Debug("likely ip already exists", zap.String("ip", ip.String()), zap.String("domain", from))
 		// return fmt.Errorf("bad request code: %d - %s - %s", resp.StatusCode, ip, from)
 		// likely the ip already exists in the addrlist, ignore
 		return nil
