@@ -217,7 +217,7 @@ func (p *IPSet) watchFiles() {
 		select {
 		case event, ok := <-p.watcher.Events:
 			if !ok {
-				logger.Debug("文件监控事件channel已关闭，退出监控循环")
+				logger.Debug("文件监控已关闭，退出监控循环")
 				return
 			}
 
@@ -252,21 +252,20 @@ func (p *IPSet) watchFiles() {
 				go func(filename string) {
 					start := time.Now()
 					if err := p.rebuildMatcher(); err != nil {
-						logger.Sugar().Warnf("热重载失败 (%s): %v", filename, err)
+						logger.Error("热重载失败", zap.String("filename", filename), zap.Any("duration", err))
 					} else {
-						logger.Sugar().Infof("热重载完成 (%s): 耗时 %v", filename, time.Since(start))
+						logger.Info("热重载完成", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
 					}
 				}(event.Name)
 
 				lastReload = time.Now()
 			}
 
-		case err, ok := <-p.watcher.Errors:
+		case _, ok := <-p.watcher.Errors:
 			if !ok {
-				logger.Debug("文件监控错误channel已关闭，退出监控循环")
+				logger.Debug("文件监控已关闭，退出监控循环")
 				return
 			}
-			logger.Sugar().Errorf("文件监控错误: %v", err)
 		}
 	}
 }
