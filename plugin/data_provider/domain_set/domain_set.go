@@ -114,11 +114,6 @@ func (d *DomainSet) rebuildMatcher() error {
 
 	logger.Info("domain matcher重建完成", zap.Int("matchers", len(matchers)), zap.Any("matcher_details", matchers))
 
-	// 打印每个matcher的详细信息
-	// for i, matcher := range matchers {
-	// 	logger.Sugar().Debugf("matcher[%d]: %T", i, matcher)
-	// }
-
 	return nil
 }
 
