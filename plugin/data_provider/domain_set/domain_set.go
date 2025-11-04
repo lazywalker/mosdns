@@ -55,8 +55,10 @@ type Args struct {
 	AutoReload bool     `yaml:"auto_reload"`
 }
 
-var _ data_provider.DomainMatcherProvider = (*DomainSet)(nil)
-var logger = (*zap.Logger)(nil)
+var (
+	_      data_provider.DomainMatcherProvider = (*DomainSet)(nil)
+	logger                                     = (*zap.Logger)(nil)
+)
 
 type DomainSet struct {
 	// 动态matcher组，支持热重载
@@ -71,13 +73,12 @@ type DomainSet struct {
 	args *Args
 }
 
+// 返回动态matcher组，支持热重载
 func (d *DomainSet) GetDomainMatcher() domain.Matcher[struct{}] {
-	// 返回动态matcher组，支持热重载
-	logger.Debug("getDomainMatcher调用，返回动态matcher组")
 	return d.dynamicGroup
 }
 
-// rebuildMatcher 重建matcher（简化版）
+// rebuildMatcher 重建matcher
 func (d *DomainSet) rebuildMatcher() error {
 	logger.Debug("开始重建domain matcher")
 
@@ -111,12 +112,12 @@ func (d *DomainSet) rebuildMatcher() error {
 	newGroup := MatcherGroup(matchers)
 	d.dynamicGroup.Update(newGroup)
 
-	logger.Info("domain matcher重建完成", zap.Int("matchers", len(matchers)))
+	logger.Info("domain matcher重建完成", zap.Int("matchers", len(matchers)), zap.Any("matcher_details", matchers))
 
 	// 打印每个matcher的详细信息
-	for i, matcher := range matchers {
-		logger.Sugar().Debugf("matcher[%d]: %T", i, matcher)
-	}
+	// for i, matcher := range matchers {
+	// 	logger.Sugar().Debugf("matcher[%d]: %T", i, matcher)
+	// }
 
 	return nil
 }
@@ -134,17 +135,15 @@ func NewDomainSet(bp *coremain.BP, args *Args) (*DomainSet, error) {
 	}
 
 	// 可选的文件监控
+	logger.Info("文件热重载功能状态", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
 	if args.AutoReload && len(args.Files) > 0 {
-		logger.Sugar().Infof("启用文件热重载功能，监控文件: %v", args.Files)
+		logger.Info("启用文件热重载功能", zap.Any("files", args.Files))
 		ds.files = args.Files
 		if err := ds.startFileWatcher(); err != nil {
 			logger.Sugar().Errorf("启动文件监控失败: %v", err)
 			return nil, fmt.Errorf("failed to start file watcher: %w", err)
 		}
 		logger.Info("文件监控启动成功")
-	} else {
-		logger.Sugar().Warnf("文件热重载功能未启用 (auto_reload=%v, files_count=%d)",
-			args.AutoReload, len(args.Files))
 	}
 
 	return ds, nil
@@ -225,7 +224,7 @@ func (d *DomainSet) watchFiles() {
 				return
 			}
 
-			logger.Sugar().Debugf("收到文件事件: %s, 操作: %s", event.Name, event.Op.String())
+			logger.Debug("收到文件事件", zap.String("event.name", event.Name), zap.String("event.op", event.Op.String()))
 
 			if event.Op&fsnotify.Write == fsnotify.Write ||
 				event.Op&fsnotify.Create == fsnotify.Create {
