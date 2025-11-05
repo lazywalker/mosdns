@@ -30,7 +30,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/netlist"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/fsnotify/fsnotify"
+	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider/shared"
 	"go.uber.org/zap"
 )
 
@@ -61,8 +61,7 @@ type IPSet struct {
 	mg []netlist.Matcher
 
 	// 可选的热加载支持
-	watcher *fsnotify.Watcher
-	files   []string
+	fw *shared.FileWatcher
 	// 重建参数
 	bp   *coremain.BP
 	args *Args
@@ -112,8 +111,10 @@ func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
 	// 可选的文件监控
 	logger.Info("文件热重载功能状态", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
 	if args.AutoReload && len(args.Files) > 0 {
-		p.files = args.Files
-		if err := p.startFileWatcher(); err != nil {
+		p.fw = shared.NewFileWatcher(logger, func(filename string) error {
+			return p.rebuildMatcher()
+		}, 500*time.Millisecond)
+		if err := p.fw.Start(args.Files); err != nil {
 			logger.Sugar().Errorf("启动文件监控失败: %v", err)
 			return nil, fmt.Errorf("failed to start file watcher: %w", err)
 		}
@@ -188,92 +189,9 @@ func (mg MatcherGroup) Match(addr netip.Addr) bool {
 	return false
 }
 
-func (p *IPSet) startFileWatcher() error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-
-	p.watcher = watcher
-
-	for _, file := range p.files {
-		if err := watcher.Add(file); err != nil {
-			return fmt.Errorf("failed to watch file %s: %w", file, err)
-		}
-		logger.Debug("开始监控文件", zap.String("file", file))
-	}
-
-	go p.watchFiles()
-
-	return nil
-}
-
-func (p *IPSet) watchFiles() {
-	lastReload := time.Now()
-
-	logger.Debug("文件监控循环开始")
-
-	for {
-		select {
-		case event, ok := <-p.watcher.Events:
-			if !ok {
-				logger.Debug("文件监控已关闭，退出监控循环")
-				return
-			}
-
-			logger.Debug("收到文件事件", zap.String("event.name", event.Name), zap.String("event.op", event.Op.String()))
-
-			if event.Op&fsnotify.Write == fsnotify.Write ||
-				event.Op&fsnotify.Create == fsnotify.Create {
-
-				// 检查是否是监控的文件
-				monitored := false
-				for _, file := range p.files {
-					if file == event.Name {
-						monitored = true
-						break
-					}
-				}
-
-				if !monitored {
-					logger.Debug("忽略非监控文件的事件", zap.String("event", event.Name))
-					continue
-				}
-
-				// 简单防抖
-				if time.Since(lastReload) < 500*time.Millisecond {
-					logger.Debug("防抖期内，跳过重载", zap.String("event", event.Name))
-					continue
-				}
-
-				logger.Debug("检测到文件变更，开始热重载", zap.String("event", event.Name))
-
-				// 异步重载，不阻塞
-				go func(filename string) {
-					start := time.Now()
-					if err := p.rebuildMatcher(); err != nil {
-						logger.Error("热重载失败", zap.String("filename", filename), zap.Any("duration", err))
-					} else {
-						logger.Info("热重载完成", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
-					}
-				}(event.Name)
-
-				lastReload = time.Now()
-			}
-
-		case _, ok := <-p.watcher.Errors:
-			if !ok {
-				logger.Debug("文件监控已关闭，退出监控循环")
-				return
-			}
-		}
-	}
-}
-
 func (p *IPSet) Close() error {
-	if p.watcher != nil {
-		logger.Info("关闭文件监控器")
-		return p.watcher.Close()
+	if p.fw != nil {
+		return p.fw.Close()
 	}
 	return nil
 }

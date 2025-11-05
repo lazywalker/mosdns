@@ -29,7 +29,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/fsnotify/fsnotify"
+	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider/shared"
 	"go.uber.org/zap"
 )
 
@@ -65,8 +65,7 @@ type DomainSet struct {
 	dynamicGroup *DynamicMatcherGroup
 
 	// 可选的热加载支持
-	watcher *fsnotify.Watcher
-	files   []string
+	fw *shared.FileWatcher
 
 	// 重建参数
 	bp   *coremain.BP
@@ -133,8 +132,10 @@ func NewDomainSet(bp *coremain.BP, args *Args) (*DomainSet, error) {
 	logger.Info("文件热重载功能状态", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
 	if args.AutoReload && len(args.Files) > 0 {
 		logger.Info("启用文件热重载功能", zap.Any("files", args.Files))
-		ds.files = args.Files
-		if err := ds.startFileWatcher(); err != nil {
+		ds.fw = shared.NewFileWatcher(logger, func(filename string) error {
+			return ds.rebuildMatcher()
+		}, 500*time.Millisecond)
+		if err := ds.fw.Start(args.Files); err != nil {
 			logger.Sugar().Errorf("启动文件监控失败: %v", err)
 			return nil, fmt.Errorf("failed to start file watcher: %w", err)
 		}
@@ -186,92 +187,9 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 	return nil
 }
 
-func (d *DomainSet) startFileWatcher() error {
-	watcher, err := fsnotify.NewWatcher()
-	if err != nil {
-		return err
-	}
-
-	d.watcher = watcher
-
-	for _, file := range d.files {
-		if err := watcher.Add(file); err != nil {
-			return fmt.Errorf("failed to watch file %s: %w", file, err)
-		}
-		logger.Debug("开始监控文件", zap.String("file", file))
-	}
-
-	go d.watchFiles()
-
-	return nil
-}
-
-func (d *DomainSet) watchFiles() {
-	lastReload := time.Now()
-
-	logger.Debug("文件监控循环开始")
-
-	for {
-		select {
-		case event, ok := <-d.watcher.Events:
-			if !ok {
-				logger.Debug("文件监控已关闭，退出监控循环")
-				return
-			}
-
-			logger.Debug("收到文件事件", zap.String("event.name", event.Name), zap.String("event.op", event.Op.String()))
-
-			if event.Op&fsnotify.Write == fsnotify.Write ||
-				event.Op&fsnotify.Create == fsnotify.Create {
-
-				// 检查是否是监控的文件
-				monitored := false
-				for _, file := range d.files {
-					if file == event.Name {
-						monitored = true
-						break
-					}
-				}
-
-				if !monitored {
-					logger.Debug("忽略非监控文件的事件", zap.String("event", event.Name))
-					continue
-				}
-
-				// 简单防抖
-				if time.Since(lastReload) < 500*time.Millisecond {
-					logger.Debug("防抖期内，跳过重载", zap.String("event", event.Name))
-					continue
-				}
-
-				logger.Debug("检测到文件变更，开始热重载", zap.String("event", event.Name))
-
-				// 异步重载，不阻塞
-				go func(filename string) {
-					start := time.Now()
-					if err := d.rebuildMatcher(); err != nil {
-						logger.Error("热重载失败", zap.String("filename", filename), zap.Any("duration", err))
-					} else {
-						logger.Info("热重载完成", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
-					}
-				}(event.Name)
-
-				lastReload = time.Now()
-			}
-
-		case _, ok := <-d.watcher.Errors:
-			if !ok {
-				logger.Debug("文件监控已关闭，退出监控循环")
-				return
-			}
-		}
-	}
-}
-
 func (d *DomainSet) Close() error {
-	if d.watcher != nil {
-		logger.Info("关闭文件监控器")
-		return d.watcher.Close()
+	if d.fw != nil {
+		return d.fw.Close()
 	}
 	return nil
 }
