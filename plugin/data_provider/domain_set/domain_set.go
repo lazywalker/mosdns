@@ -61,42 +61,50 @@ var (
 )
 
 type DomainSet struct {
-	// 动态matcher组，支持热重载
+	// dynamic matcher group, supports auto reload
 	dynamicGroup *DynamicMatcherGroup
 
-	// 可选的热加载支持
 	fw *shared.FileWatcher
 
-	// 重建参数
+	// rebuild parameters
 	bp   *coremain.BP
 	args *Args
 }
 
-// 返回动态matcher组，支持热重载
+// GetDomainMatcher returns the dynamic matcher that performs domain matching.
+//
+// The matcher is updated by rebuild operations and is safe to call
+// concurrently from multiple goroutines.
 func (d *DomainSet) GetDomainMatcher() domain.Matcher[struct{}] {
 	return d.dynamicGroup
 }
 
-// rebuildMatcher 重建matcher
+// rebuildMatcher rebuilds the internal matcher group from configured
+// expressions, files and referenced matcher plugins.
+//
+// This method is invoked during initialization and by file-change callbacks
+// when auto-reload is enabled. It returns an error if any load operation
+// fails.
 func (d *DomainSet) rebuildMatcher() error {
-	logger.Debug("开始重建domain matcher")
+	logger.Debug("start rebuilding domain matcher")
 
 	var matchers []domain.Matcher[struct{}]
 
-	// 加载表达式和文件到单个MixMatcher
+	// If expressions or files are configured, load them into a MixMatcher and
+	// include it in the matcher list.
 	if len(d.args.Exps) > 0 || len(d.args.Files) > 0 {
 		m := domain.NewDomainMixMatcher()
 		if err := LoadExpsAndFiles(d.args.Exps, d.args.Files, m); err != nil {
-			return fmt.Errorf("加载表达式和文件失败: %v", err)
+			return fmt.Errorf("failed to load exprs and files: %v", err)
 		}
 		if m.Len() > 0 {
 			matchers = append(matchers, m)
-			logger.Info("成功加载表达式和文件", zap.Int("exps", len(d.args.Exps)), zap.Int("files", len(d.args.Files)),
+			logger.Info("successfully loaded exprs and files", zap.Int("exps", len(d.args.Exps)), zap.Int("files", len(d.args.Files)),
 				zap.Int("domains", m.Len()))
 		}
 	}
 
-	// 添加其他插件的matchers
+	// Add matchers provided by other plugins listed in args.Sets.
 	for _, tag := range d.args.Sets {
 		provider, _ := d.bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
 		if provider == nil {
@@ -104,18 +112,20 @@ func (d *DomainSet) rebuildMatcher() error {
 		}
 		matcher := provider.GetDomainMatcher()
 		matchers = append(matchers, matcher)
-		logger.Info("成功添加插件", zap.String("matcher", tag))
+		logger.Info("successfully added plugin", zap.String("matcher", tag))
 	}
 
-	// 更新动态matcher组
+	// Update the dynamic matcher group atomically.
 	newGroup := MatcherGroup(matchers)
 	d.dynamicGroup.Update(newGroup)
 
-	logger.Info("domain matcher重建完成", zap.Int("matchers", len(matchers)), zap.Any("matcher_details", matchers))
+	logger.Info("domain matcher rebuild complete", zap.Int("matchers", len(matchers)), zap.Any("matcher_details", matchers))
 
 	return nil
 }
 
+// NewDomainSet constructs a DomainSet, builds its initial matcher state and
+// optionally starts the file watcher for auto-reload when enabled in args.
 func NewDomainSet(bp *coremain.BP, args *Args) (*DomainSet, error) {
 	ds := &DomainSet{
 		bp:           bp,
@@ -123,28 +133,29 @@ func NewDomainSet(bp *coremain.BP, args *Args) (*DomainSet, error) {
 		dynamicGroup: NewDynamicMatcherGroup(),
 	}
 
-	// 构建初始matcher
+	// build initial matcher
 	if err := ds.rebuildMatcher(); err != nil {
 		return nil, err
 	}
 
-	// 可选的文件监控
-	logger.Info("文件热重载功能状态", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
+	// optional file watcher
+	logger.Info("file auto-reload status", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
 	if args.AutoReload && len(args.Files) > 0 {
-		logger.Info("启用文件热重载功能", zap.Any("files", args.Files))
+		logger.Info("enabling file auto-reload", zap.Any("files", args.Files))
 		ds.fw = shared.NewFileWatcher(logger, func(filename string) error {
 			return ds.rebuildMatcher()
 		}, 500*time.Millisecond)
 		if err := ds.fw.Start(args.Files); err != nil {
-			logger.Sugar().Errorf("启动文件监控失败: %v", err)
 			return nil, fmt.Errorf("failed to start file watcher: %w", err)
 		}
-		logger.Info("文件监控启动成功")
+		logger.Info("file watcher started successfully")
 	}
 
 	return ds, nil
 }
 
+// LoadExpsAndFiles loads both expressions and files into the provided
+// MixMatcher. It returns early on the first error encountered.
 func LoadExpsAndFiles(exps []string, fs []string, m *domain.MixMatcher[struct{}]) error {
 	if err := LoadExps(exps, m); err != nil {
 		return err
@@ -155,6 +166,8 @@ func LoadExpsAndFiles(exps []string, fs []string, m *domain.MixMatcher[struct{}]
 	return nil
 }
 
+// LoadExps adds the provided domain expressions to the MixMatcher. Returns
+// an error that identifies which expression failed if any.
 func LoadExps(exps []string, m *domain.MixMatcher[struct{}]) error {
 	for i, exp := range exps {
 		if err := m.Add(exp, struct{}{}); err != nil {
@@ -164,6 +177,8 @@ func LoadExps(exps []string, m *domain.MixMatcher[struct{}]) error {
 	return nil
 }
 
+// LoadFiles loads domain entries from each file in fs into the MixMatcher.
+// Errors include the index and filename to ease debugging.
 func LoadFiles(fs []string, m *domain.MixMatcher[struct{}]) error {
 	for i, f := range fs {
 		if err := LoadFile(f, m); err != nil {
@@ -173,6 +188,8 @@ func LoadFiles(fs []string, m *domain.MixMatcher[struct{}]) error {
 	return nil
 }
 
+// LoadFile reads domains from a single file and appends them to the MixMatcher.
+// If f is empty the function returns nil.
 func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 	if len(f) > 0 {
 		b, err := os.ReadFile(f)
@@ -187,6 +204,8 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 	return nil
 }
 
+// Close stops the file watcher (if enabled) and releases resources. It is
+// safe to call multiple times.
 func (d *DomainSet) Close() error {
 	if d.fw != nil {
 		return d.fw.Close()

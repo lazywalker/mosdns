@@ -57,32 +57,39 @@ var (
 	logger                                 = (*zap.Logger)(nil)
 )
 
+// IPSet provides an IP matcher composed from configured IPs, files and
+// referenced matcher plugins. It optionally supports auto-reloading when a
+// FileWatcher is enabled.
 type IPSet struct {
 	mg []netlist.Matcher
 
-	// 可选的热加载支持
+	// optional auto-reload support
 	fw *shared.FileWatcher
-	// 重建参数
+	// rebuild parameters
 	bp   *coremain.BP
 	args *Args
 }
 
+// GetIPMatcher returns a netlist.Matcher that implements IP matching using
+// the internal matcher group. The returned matcher may be used concurrently.
 func (p *IPSet) GetIPMatcher() netlist.Matcher {
 	return MatcherGroup(p.mg)
 }
 
-// rebuildMatcher 重建matcher
+// rebuildMatcher reconstructs the internal netlist matcher from configured
+// IP prefixes, files and referenced matcher plugins. It returns an error
+// if any of the load operations fail.
 func (p *IPSet) rebuildMatcher() error {
-	logger.Debug("开始重建netlist matcher")
+	logger.Debug("start rebuilding netlist matcher")
 
 	l := netlist.NewList()
 	if err := LoadFromIPsAndFiles(p.args.IPs, p.args.Files, l); err != nil {
-		return fmt.Errorf("加载文件失败: %v", err)
+		return fmt.Errorf("failed to load files: %v", err)
 	}
 	l.Sort()
 	if l.Len() > 0 {
 		p.mg = append(p.mg, l)
-		logger.Info("成功加载IP表和文件", zap.Int("IPs", len(p.args.IPs)), zap.Int("files", len(p.args.Files)),
+		logger.Info("successfully loaded IPs and files", zap.Int("IPs", len(p.args.IPs)), zap.Int("files", len(p.args.Files)),
 			zap.Int("netlist", l.Len()))
 	}
 	for _, tag := range p.args.Sets {
@@ -91,39 +98,45 @@ func (p *IPSet) rebuildMatcher() error {
 			return fmt.Errorf("%s is not an IPMatcherProvider", tag)
 		}
 		p.mg = append(p.mg, provider.GetIPMatcher())
-		logger.Info("成功添加插件", zap.String("matcher", tag))
+		logger.Info("successfully added plugin", zap.String("matcher", tag))
 	}
 
 	return nil
 }
 
+// NewIPSet creates a new IPSet, builds the initial matcher state and
+// optionally starts the file watcher to support auto-reload.
 func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
 	p := &IPSet{
 		bp:   bp,
 		args: args,
 	}
 
-	// 构建初始matcher
+	// build initial matcher
 	if err := p.rebuildMatcher(); err != nil {
 		return nil, err
 	}
 
-	// 可选的文件监控
-	logger.Info("文件热重载功能状态", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
+	// optional file watcher
+	logger.Info("file auto-reload status", zap.Bool("auto_reload", args.AutoReload), zap.Any("files", args.Files))
 	if args.AutoReload && len(args.Files) > 0 {
 		p.fw = shared.NewFileWatcher(logger, func(filename string) error {
 			return p.rebuildMatcher()
 		}, 500*time.Millisecond)
 		if err := p.fw.Start(args.Files); err != nil {
-			logger.Sugar().Errorf("启动文件监控失败: %v", err)
+			logger.Sugar().Errorf("failed to start file watcher: %v", err)
 			return nil, fmt.Errorf("failed to start file watcher: %w", err)
 		}
-		logger.Info("文件监控启动成功")
+		logger.Info("file watcher started successfully")
 	}
 
 	return p, nil
 }
 
+// parseNetipPrefix parses a string that represents either an IP address or a
+// CIDR-style prefix and returns a netip.Prefix. If the input contains a
+// '/' it is treated as a prefix; otherwise it is parsed as an address and a
+// full-length prefix is returned.
 func parseNetipPrefix(s string) (netip.Prefix, error) {
 	if strings.ContainsRune(s, '/') {
 		return netip.ParsePrefix(s)
@@ -135,6 +148,9 @@ func parseNetipPrefix(s string) (netip.Prefix, error) {
 	return addr.Prefix(addr.BitLen())
 }
 
+// LoadFromIPsAndFiles loads IP prefixes from both the ips slice and the
+// provided files into the target netlist.List. It returns early on first
+// error.
 func LoadFromIPsAndFiles(ips []string, fs []string, l *netlist.List) error {
 	if err := LoadFromIPs(ips, l); err != nil {
 		return err
@@ -145,6 +161,8 @@ func LoadFromIPsAndFiles(ips []string, fs []string, l *netlist.List) error {
 	return nil
 }
 
+// LoadFromIPs parses the ips slice and appends valid prefixes to the
+// netlist.List. The returned error includes the index of the failing entry.
 func LoadFromIPs(ips []string, l *netlist.List) error {
 	for i, s := range ips {
 		p, err := parseNetipPrefix(s)
@@ -156,6 +174,8 @@ func LoadFromIPs(ips []string, l *netlist.List) error {
 	return nil
 }
 
+// LoadFromFiles loads prefixes from each of the provided files into the
+// netlist.List. Errors identify the failing file by index and name.
 func LoadFromFiles(fs []string, l *netlist.List) error {
 	for i, f := range fs {
 		if err := LoadFromFile(f, l); err != nil {
@@ -165,6 +185,8 @@ func LoadFromFiles(fs []string, l *netlist.List) error {
 	return nil
 }
 
+// LoadFromFile reads a list of prefixes from a single file and loads them
+// into the given netlist.List. If f is empty the function is a no-op.
 func LoadFromFile(f string, l *netlist.List) error {
 	if len(f) > 0 {
 		b, err := os.ReadFile(f)
@@ -178,6 +200,8 @@ func LoadFromFile(f string, l *netlist.List) error {
 	return nil
 }
 
+// MatcherGroup is a helper that composes multiple netlist.Matcher
+// implementations and returns true if any of them match the given address.
 type MatcherGroup []netlist.Matcher
 
 func (mg MatcherGroup) Match(addr netip.Addr) bool {
@@ -189,6 +213,7 @@ func (mg MatcherGroup) Match(addr netip.Addr) bool {
 	return false
 }
 
+// Close stops the optional file watcher and releases resources.
 func (p *IPSet) Close() error {
 	if p.fw != nil {
 		return p.fw.Close()
