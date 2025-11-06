@@ -88,7 +88,7 @@ func (fw *FileWatcher) loop() {
 
 			fw.logger.Debug("received file event", zap.String("event.name", event.Name), zap.String("event.op", event.Op.String()))
 
-			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create {
+			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Chmod == fsnotify.Chmod {
 				if _, ok := fw.files[event.Name]; !ok {
 					fw.logger.Debug("ignore event for non-monitored file", zap.String("event", event.Name))
 					continue
