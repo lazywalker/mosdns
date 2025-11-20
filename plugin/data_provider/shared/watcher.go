@@ -109,7 +109,10 @@ func (fw *FileWatcher) loop() {
 			if event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename == fsnotify.Rename {
 				fw.logger.Info("file removed or renamed, attempting to re-watch", zap.String("file", event.Name))
 				// Re-add the file to the watch list after a short delay to allow
-				// the file to be recreated (common in atomic replacements)
+				// the file to be recreated (common in atomic replacements).
+				// Note: We don't trigger a reload here because the file may not be
+				// fully written yet. Let subsequent WRITE/CREATE events trigger the
+				// reload when the file is actually ready.
 				go func(filename string) {
 					// Wait a bit for the file to be recreated
 					time.Sleep(50 * time.Millisecond)
@@ -117,22 +120,6 @@ func (fw *FileWatcher) loop() {
 					for i := 0; i < 5; i++ {
 						if err := fw.watcher.Add(filename); err == nil {
 							fw.logger.Info("successfully re-added file to watch list", zap.String("file", filename))
-							// Trigger a reload since the file was replaced
-							fw.lastReloadMu.Lock()
-							shouldReload := time.Since(fw.lastReload) >= fw.debounce
-							if shouldReload {
-								fw.lastReload = time.Now()
-							}
-							fw.lastReloadMu.Unlock()
-							
-							if shouldReload {
-								start := time.Now()
-								if err := fw.cb(filename); err != nil {
-									fw.logger.Error("auto-reload failed after file recreation", zap.String("filename", filename), zap.Error(err))
-								} else {
-									fw.logger.Info("auto-reload completed after file recreation", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
-								}
-							}
 							return
 						}
 						fw.logger.Debug("failed to re-add file, retrying", zap.String("file", filename), zap.Int("attempt", i+1))
@@ -148,16 +135,22 @@ func (fw *FileWatcher) loop() {
 			// was removed and recreated (common with atomic file replacements).
 			// Note: fsnotify.Watcher.Add() is idempotent - calling it on an
 			// already-watched file is safe and inexpensive.
+			// We don't trigger reload on CREATE because the file might not be
+			// fully written yet - WRITE events will trigger reload when ready.
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				if err := fw.watcher.Add(event.Name); err != nil {
 					fw.logger.Error("failed to re-add file to watch list", zap.String("file", event.Name), zap.Error(err))
 				} else {
 					fw.logger.Debug("re-added file to watch list after create", zap.String("file", event.Name))
 				}
+				// Don't trigger reload yet - wait for WRITE event
+				continue
 			}
 
-			// Trigger reload for Write, Create, or Chmod events
-			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Chmod == fsnotify.Chmod {
+			// Trigger reload for Write events.
+			// Note: We don't use Chmod events because they can be triggered during
+			// file removal operations, causing spurious reloads when the file doesn't exist.
+			if event.Op&fsnotify.Write == fsnotify.Write {
 				// simple time-based debounce: skip events that arrive within the
 				// configured debounce window since the last reload.
 				fw.lastReloadMu.Lock()
