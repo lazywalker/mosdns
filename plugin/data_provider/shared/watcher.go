@@ -113,7 +113,7 @@ func (fw *FileWatcher) loop() {
 				go func(filename string) {
 					// Wait a bit for the file to be recreated
 					time.Sleep(50 * time.Millisecond)
-					// Try multiple times with backoff
+					// Try multiple times with exponential backoff
 					for i := 0; i < 5; i++ {
 						if err := fw.watcher.Add(filename); err == nil {
 							fw.logger.Info("successfully re-added file to watch list", zap.String("file", filename))
@@ -136,7 +136,8 @@ func (fw *FileWatcher) loop() {
 							return
 						}
 						fw.logger.Debug("failed to re-add file, retrying", zap.String("file", filename), zap.Int("attempt", i+1))
-						time.Sleep(time.Duration(50*(i+1)) * time.Millisecond)
+						// Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms
+						time.Sleep(time.Duration(50*(1<<uint(i))) * time.Millisecond)
 					}
 					fw.logger.Error("failed to re-add file to watch list after multiple attempts", zap.String("file", filename))
 				}(event.Name)
@@ -144,7 +145,9 @@ func (fw *FileWatcher) loop() {
 			}
 
 			// Handle CREATE events - re-add the file to watch list in case it
-			// was removed and recreated (common with atomic file replacements)
+			// was removed and recreated (common with atomic file replacements).
+			// Note: fsnotify.Watcher.Add() is idempotent - calling it on an
+			// already-watched file is safe and inexpensive.
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				if err := fw.watcher.Add(event.Name); err != nil {
 					fw.logger.Error("failed to re-add file to watch list", zap.String("file", event.Name), zap.Error(err))

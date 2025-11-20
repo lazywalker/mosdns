@@ -205,10 +205,14 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	mu.Unlock()
 
 	// The rapid changes should have been mostly debounced.
-	// We allow some reloads due to multiple WRITE events from os.WriteFile,
-	// but it should be significantly less than the 5 writes we made.
-	if secondReloadCount > firstReloadCount+2 {
-		t.Errorf("expected debounce to limit reloads, got %d extra reloads from 5 rapid writes", secondReloadCount-firstReloadCount)
+	// We allow up to 2 additional reloads due to multiple WRITE events that
+	// os.WriteFile may trigger (e.g., file open, write, close can generate
+	// multiple events), but it should be significantly less than the 5 writes
+	// we made, demonstrating that debounce is working.
+	const maxAllowedExtraReloads = 2
+	if secondReloadCount > firstReloadCount+maxAllowedExtraReloads {
+		t.Errorf("expected debounce to limit reloads, got %d extra reloads from 5 rapid writes (max allowed: %d)", 
+			secondReloadCount-firstReloadCount, maxAllowedExtraReloads)
 	}
 
 	// Wait for debounce period to pass
