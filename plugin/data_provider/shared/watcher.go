@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -147,10 +148,20 @@ func (fw *FileWatcher) loop() {
 				continue
 			}
 
-			// Trigger reload for Write events.
-			// Note: We don't use Chmod events because they can be triggered during
-			// file removal operations, causing spurious reloads when the file doesn't exist.
-			if event.Op&fsnotify.Write == fsnotify.Write {
+			// Trigger reload for Write or Chmod events.
+			// For Chmod events, we verify the file exists to avoid spurious reloads
+			// during file removal operations. This allows handling file updates via
+			// cp -f (which may only generate Chmod events on some systems).
+			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Chmod == fsnotify.Chmod {
+				// For CHMOD events, verify the file exists before triggering reload
+				// to avoid "file not found" errors during atomic replacements
+				if event.Op&fsnotify.Chmod == fsnotify.Chmod {
+					if _, err := os.Stat(event.Name); os.IsNotExist(err) {
+						fw.logger.Debug("chmod event for non-existent file, skipping", zap.String("file", event.Name))
+						continue
+					}
+				}
+
 				// simple time-based debounce: skip events that arrive within the
 				// configured debounce window since the last reload.
 				fw.lastReloadMu.Lock()

@@ -230,6 +230,86 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	}
 }
 
+// TestFileWatcher_CopyOverwrite tests that file updates via cp -f trigger reload
+// This simulates the update script behavior where files are downloaded to temp
+// directory and then copied over with cp -f
+func TestFileWatcher_CopyOverwrite(t *testing.T) {
+	// Create a temporary directory and file
+	tmpDir := t.TempDir()
+	testFile := filepath.Join(tmpDir, "test.txt")
+	
+	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	// Track reload calls
+	var mu sync.Mutex
+	reloadCount := 0
+	var lastContent string
+
+	callback := func(filename string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		reloadCount++
+		// Read content to verify it changed
+		content, _ := os.ReadFile(filename)
+		lastContent = string(content)
+		return nil
+	}
+
+	// Create and start watcher
+	logger := zap.NewNop()
+	fw := NewFileWatcher(logger, callback, 100*time.Millisecond)
+	
+	if err := fw.Start([]string{testFile}); err != nil {
+		t.Fatalf("failed to start file watcher: %v", err)
+	}
+	defer fw.Close()
+
+	// Give the watcher time to set up
+	time.Sleep(150 * time.Millisecond)
+
+	// Simulate update script: create temp file and copy over with WriteFile
+	// (os.WriteFile should generate WRITE or CHMOD events)
+	if err := os.WriteFile(testFile, []byte("updated via write"), 0644); err != nil {
+		t.Fatalf("failed to overwrite file: %v", err)
+	}
+
+	// Wait for reload to be triggered
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	firstReload := reloadCount
+	firstContent := lastContent
+	mu.Unlock()
+
+	if firstReload == 0 {
+		t.Error("expected reload after file overwrite")
+	}
+
+	if firstContent != "updated via write" {
+		t.Errorf("expected content 'updated via write', got '%s'", firstContent)
+	}
+
+	// Test again with another update
+	if err := os.WriteFile(testFile, []byte("second update"), 0644); err != nil {
+		t.Fatalf("failed to overwrite file again: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if reloadCount <= firstReload {
+		t.Errorf("expected another reload, got %d reloads total", reloadCount)
+	}
+
+	if lastContent != "second update" {
+		t.Errorf("expected content 'second update', got '%s'", lastContent)
+	}
+}
+
 // TestFileWatcher_MultipleFiles tests watching multiple files
 func TestFileWatcher_MultipleFiles(t *testing.T) {
 	// Create a temporary directory and files
