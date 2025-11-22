@@ -1,6 +1,8 @@
 package shared
 
 import (
+	"os"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -21,11 +23,13 @@ type FileChangeCallback func(filename string) error
 // It encapsulates an fsnotify watcher, maintains a set of monitored files and
 // provides a simple time-based debounce to avoid excessive reloads.
 type FileWatcher struct {
-	logger   *zap.Logger
-	watcher  *fsnotify.Watcher
-	files    map[string]struct{}
-	cb       FileChangeCallback
-	debounce time.Duration
+	logger       *zap.Logger
+	watcher      *fsnotify.Watcher
+	files        map[string]struct{}
+	cb           FileChangeCallback
+	debounce     time.Duration
+	lastReloadMu sync.Mutex
+	lastReload   time.Time
 }
 
 // NewFileWatcher constructs a FileWatcher.
@@ -75,7 +79,10 @@ func (fw *FileWatcher) Start(files []string) error {
 // its own goroutine and will exit when the underlying watcher channels are
 // closed.
 func (fw *FileWatcher) loop() {
-	lastReload := time.Now()
+	fw.lastReloadMu.Lock()
+	fw.lastReload = time.Now()
+	fw.lastReloadMu.Unlock()
+	
 	fw.logger.Debug("file watcher loop started")
 
 	for {
@@ -88,15 +95,83 @@ func (fw *FileWatcher) loop() {
 
 			fw.logger.Debug("received file event", zap.String("event.name", event.Name), zap.String("event.op", event.Op.String()))
 
-			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Create == fsnotify.Create || event.Op&fsnotify.Chmod == fsnotify.Chmod {
-				if _, ok := fw.files[event.Name]; !ok {
-					fw.logger.Debug("ignore event for non-monitored file", zap.String("event", event.Name))
-					continue
+			// Check if this is a monitored file
+			_, isMonitored := fw.files[event.Name]
+			if !isMonitored {
+				fw.logger.Debug("ignore event for non-monitored file", zap.String("event", event.Name))
+				continue
+			}
+
+			// Handle REMOVE and RENAME events that can cause the file to be
+			// unwatched. Many editors (vim, nano, etc.) perform atomic file
+			// replacements by creating a new file and renaming it over the
+			// original, which causes fsnotify to stop watching the file.
+			// We need to re-add the file to the watch list.
+			if event.Op&fsnotify.Remove == fsnotify.Remove || event.Op&fsnotify.Rename == fsnotify.Rename {
+				fw.logger.Info("file removed or renamed, attempting to re-watch", zap.String("file", event.Name))
+				// Re-add the file to the watch list after a short delay to allow
+				// the file to be recreated (common in atomic replacements).
+				// Note: We don't trigger a reload here because the file may not be
+				// fully written yet. Let subsequent WRITE/CREATE events trigger the
+				// reload when the file is actually ready.
+				go func(filename string) {
+					// Wait a bit for the file to be recreated
+					time.Sleep(50 * time.Millisecond)
+					// Try multiple times with exponential backoff
+					for i := 0; i < 5; i++ {
+						if err := fw.watcher.Add(filename); err == nil {
+							fw.logger.Info("successfully re-added file to watch list", zap.String("file", filename))
+							return
+						}
+						fw.logger.Debug("failed to re-add file, retrying", zap.String("file", filename), zap.Int("attempt", i+1))
+						// Exponential backoff: 50ms, 100ms, 200ms, 400ms, 800ms
+						time.Sleep(time.Duration(50*(1<<uint(i))) * time.Millisecond)
+					}
+					fw.logger.Error("failed to re-add file to watch list after multiple attempts", zap.String("file", filename))
+				}(event.Name)
+				continue
+			}
+
+			// Handle CREATE events - re-add the file to watch list in case it
+			// was removed and recreated (common with atomic file replacements).
+			// Note: fsnotify.Watcher.Add() is idempotent - calling it on an
+			// already-watched file is safe and inexpensive.
+			// We don't trigger reload on CREATE because the file might not be
+			// fully written yet - WRITE events will trigger reload when ready.
+			if event.Op&fsnotify.Create == fsnotify.Create {
+				if err := fw.watcher.Add(event.Name); err != nil {
+					fw.logger.Error("failed to re-add file to watch list", zap.String("file", event.Name), zap.Error(err))
+				} else {
+					fw.logger.Debug("re-added file to watch list after create", zap.String("file", event.Name))
+				}
+				// Don't trigger reload yet - wait for WRITE event
+				continue
+			}
+
+			// Trigger reload for Write or Chmod events.
+			// For Chmod events, we verify the file exists to avoid spurious reloads
+			// during file removal operations. This allows handling file updates via
+			// cp -f (which may only generate Chmod events on some systems).
+			if event.Op&fsnotify.Write == fsnotify.Write || event.Op&fsnotify.Chmod == fsnotify.Chmod {
+				// For CHMOD events, verify the file exists before triggering reload
+				// to avoid "file not found" errors during atomic replacements
+				if event.Op&fsnotify.Chmod == fsnotify.Chmod {
+					if _, err := os.Stat(event.Name); os.IsNotExist(err) {
+						fw.logger.Debug("chmod event for non-existent file, skipping", zap.String("file", event.Name))
+						continue
+					}
 				}
 
 				// simple time-based debounce: skip events that arrive within the
 				// configured debounce window since the last reload.
-				if time.Since(lastReload) < fw.debounce {
+				fw.lastReloadMu.Lock()
+				shouldReload := time.Since(fw.lastReload) >= fw.debounce
+				if shouldReload {
+					fw.lastReload = time.Now()
+				}
+				fw.lastReloadMu.Unlock()
+
+				if !shouldReload {
 					fw.logger.Debug("within debounce period, skipping reload", zap.String("event", event.Name))
 					continue
 				}
@@ -114,14 +189,16 @@ func (fw *FileWatcher) loop() {
 						fw.logger.Info("auto-reload completed", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
 					}
 				}(event.Name)
-
-				lastReload = time.Now()
 			}
 
-		case _, ok := <-fw.watcher.Errors:
+		case err, ok := <-fw.watcher.Errors:
 			if !ok {
 				fw.logger.Debug("file watcher closed, exiting loop")
 				return
+			}
+			// Log errors from fsnotify to help diagnose issues
+			if err != nil {
+				fw.logger.Error("file watcher error", zap.Error(err))
 			}
 		}
 	}
