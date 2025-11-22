@@ -112,3 +112,21 @@ v.AutomaticEnv()
 - 调用位置与测试：该 helper 应在 `loadConfig`（`run.go`）中 v.Unmarshal 之后调用。相关单元测试在 `coremain/run_test.go`（示例：`TestLoadConfig_PluginPasswdEnvOverride`）。
 
 - 与安全实践的关系：对于敏感字段（如 `passwd`），优先使用受管 secret 方案（参见 `docs/SECURE_SECRETS.md`），不要把明文凭证直接写入仓库或 CI 日志。
+
+## 日志时间格式：`time_format`（`mlog/logger.go`）
+
+- 新增 `LogConfig.TimeFormat`（YAML 键 `time_format`），用于控制结构化 JSON 日志中 `ts` 字段和开发控制台输出中的时间编码格式。
+
+- 支持值：
+  - `timestamp`（默认）：保持原有数值型 epoch 时间戳行为。
+  - `iso8601`：ISO8601 可读时间戳（例如 `2025-11-22T14:15:26.048Z`）。
+  - `rfc3339`：符合 RFC3339 的时间戳（Go 的 `time.RFC3339`）。
+  - `custom:<layout>`：使用自定义 Go 时间布局（在 `custom:` 之后指定布局，例如 `custom:2006-01-02 15:04:05`）。
+
+- 行为细节：
+  - `time_format` 同时影响 production JSON encoder（`mlog/logger.go` 中生产配置）和 development console encoder，因此本地与结构化日志可保持一致。
+  - 当设置为 `iso8601`/`rfc3339`/`custom` 时，`ts` 字段将以字符串形式写入 JSON 日志；当保留 `timestamp` 时仍为数值型。
+
+- 测试与文档：已添加单元测试 `mlog/logger_test.go` （覆盖 `timestamp`、`iso8601`、`rfc3339` 和 `custom`），并新增文档 `docs/README_LOG.md` 描述配置选项与示例。
+
+- 与现有日志与运维实践的关系：如果你希望在仓库中默认使用可读时间戳（例如 `iso8601`），可以将默认值从 `timestamp` 改为 `iso8601`；目前默认保持向后兼容的数值时间戳。

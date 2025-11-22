@@ -21,9 +21,11 @@ package mlog
 
 import (
 	"fmt"
+	"os"
+	"strings"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"os"
 )
 
 type LogConfig struct {
@@ -36,6 +38,15 @@ type LogConfig struct {
 
 	// Production enables json output.
 	Production bool `yaml:"production"`
+
+	// TimeFormat controls how the timestamp (`ts`) field is encoded for
+	// structured logs. Supported values:
+	//  - "timestamp" (default): numeric epoch timestamp (existing behavior)
+	//  - "iso8601": human-readable ISO8601 timestamps
+	//  - "rfc3339": RFC3339 timestamps
+	//  - "custom:<layout>": use a custom Go time layout string after the
+	//    `custom:` prefix (e.g. `custom:2006-01-02 15:04:05`)
+	TimeFormat string `yaml:"time_format"`
 }
 
 var (
@@ -64,10 +75,41 @@ func NewLogger(lc LogConfig) (*zap.Logger, error) {
 		out = stderr
 	}
 
+	// Configure encoder based on requested time format.
+	var devCfg zapcore.EncoderConfig
 	if lc.Production {
-		return zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), out, lvl)), nil
+		cfg := zap.NewProductionEncoderConfig()
+		// decide time encoder based on configuration
+		switch strings.ToLower(lc.TimeFormat) {
+		case "", "timestamp":
+			// keep default (epoch) behavior
+		case "iso8601":
+			cfg.EncodeTime = zapcore.ISO8601TimeEncoder
+		case "rfc3339":
+			cfg.EncodeTime = zapcore.RFC3339TimeEncoder
+		default:
+			if strings.HasPrefix(lc.TimeFormat, "custom:") {
+				layout := strings.TrimPrefix(lc.TimeFormat, "custom:")
+				cfg.EncodeTime = zapcore.TimeEncoderOfLayout(layout)
+			}
+		}
+		return zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(cfg), out, lvl)), nil
 	}
-	return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()), out, lvl)), nil
+	devCfg = zap.NewDevelopmentEncoderConfig()
+	switch strings.ToLower(lc.TimeFormat) {
+	case "", "timestamp":
+		// leave development default
+	case "iso8601":
+		devCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	case "rfc3339":
+		devCfg.EncodeTime = zapcore.RFC3339TimeEncoder
+	default:
+		if strings.HasPrefix(lc.TimeFormat, "custom:") {
+			layout := strings.TrimPrefix(lc.TimeFormat, "custom:")
+			devCfg.EncodeTime = zapcore.TimeEncoderOfLayout(layout)
+		}
+	}
+	return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(devCfg), out, lvl)), nil
 }
 
 // L is a global logger.
