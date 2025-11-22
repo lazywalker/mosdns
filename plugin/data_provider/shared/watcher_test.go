@@ -15,7 +15,7 @@ func TestFileWatcher_BasicReload(t *testing.T) {
 	// Create a temporary directory and file
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	
+
 	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
@@ -36,7 +36,7 @@ func TestFileWatcher_BasicReload(t *testing.T) {
 	// Create and start watcher
 	logger := zap.NewNop()
 	fw := NewFileWatcher(logger, callback, 100*time.Millisecond)
-	
+
 	if err := fw.Start([]string{testFile}); err != nil {
 		t.Fatalf("failed to start file watcher: %v", err)
 	}
@@ -56,11 +56,11 @@ func TestFileWatcher_BasicReload(t *testing.T) {
 	// Verify reload was called
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if reloadCount == 0 {
 		t.Error("expected at least one reload, got 0")
 	}
-	
+
 	if lastFilename != testFile {
 		t.Errorf("expected filename %s, got %s", testFile, lastFilename)
 	}
@@ -72,7 +72,7 @@ func TestFileWatcher_AtomicReplace(t *testing.T) {
 	// Create a temporary directory and file
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	
+
 	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestFileWatcher_AtomicReplace(t *testing.T) {
 	// Create and start watcher
 	logger := zap.NewNop()
 	fw := NewFileWatcher(logger, callback, 100*time.Millisecond)
-	
+
 	if err := fw.Start([]string{testFile}); err != nil {
 		t.Fatalf("failed to start file watcher: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestFileWatcher_AtomicReplace(t *testing.T) {
 	// Verify reload was called for the subsequent write
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if reloadCount <= firstReloadCount {
 		t.Errorf("expected reload after subsequent write (before: %d, after: %d)", firstReloadCount, reloadCount)
 	}
@@ -143,7 +143,7 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	// Create a temporary directory and file
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	
+
 	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	// Create and start watcher with a debounce period
 	logger := zap.NewNop()
 	fw := NewFileWatcher(logger, callback, 200*time.Millisecond)
-	
+
 	if err := fw.Start([]string{testFile}); err != nil {
 		t.Fatalf("failed to start file watcher: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestFileWatcher_Debounce(t *testing.T) {
 	// we made, demonstrating that debounce is working.
 	const maxAllowedExtraReloads = 2
 	if secondReloadCount > firstReloadCount+maxAllowedExtraReloads {
-		t.Errorf("expected debounce to limit reloads, got %d extra reloads from 5 rapid writes (max allowed: %d)", 
+		t.Errorf("expected debounce to limit reloads, got %d extra reloads from 5 rapid writes (max allowed: %d)",
 			secondReloadCount-firstReloadCount, maxAllowedExtraReloads)
 	}
 
@@ -237,7 +237,7 @@ func TestFileWatcher_CopyOverwrite(t *testing.T) {
 	// Create a temporary directory and file
 	tmpDir := t.TempDir()
 	testFile := filepath.Join(tmpDir, "test.txt")
-	
+
 	if err := os.WriteFile(testFile, []byte("initial content"), 0644); err != nil {
 		t.Fatalf("failed to create test file: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestFileWatcher_CopyOverwrite(t *testing.T) {
 	// Create and start watcher
 	logger := zap.NewNop()
 	fw := NewFileWatcher(logger, callback, 100*time.Millisecond)
-	
+
 	if err := fw.Start([]string{testFile}); err != nil {
 		t.Fatalf("failed to start file watcher: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestFileWatcher_MultipleFiles(t *testing.T) {
 	tmpDir := t.TempDir()
 	testFile1 := filepath.Join(tmpDir, "test1.txt")
 	testFile2 := filepath.Join(tmpDir, "test2.txt")
-	
+
 	if err := os.WriteFile(testFile1, []byte("file1"), 0644); err != nil {
 		t.Fatalf("failed to create test file 1: %v", err)
 	}
@@ -338,7 +338,7 @@ func TestFileWatcher_MultipleFiles(t *testing.T) {
 	// Create and start watcher
 	logger := zap.NewNop()
 	fw := NewFileWatcher(logger, callback, 100*time.Millisecond)
-	
+
 	if err := fw.Start([]string{testFile1, testFile2}); err != nil {
 		t.Fatalf("failed to start file watcher: %v", err)
 	}
@@ -362,11 +362,11 @@ func TestFileWatcher_MultipleFiles(t *testing.T) {
 	// Verify both files triggered reloads
 	mu.Lock()
 	defer mu.Unlock()
-	
+
 	if reloadedFiles[testFile1] == 0 {
 		t.Error("expected reload for file1")
 	}
-	
+
 	if reloadedFiles[testFile2] == 0 {
 		t.Error("expected reload for file2")
 	}

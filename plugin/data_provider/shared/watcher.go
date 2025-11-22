@@ -82,7 +82,7 @@ func (fw *FileWatcher) loop() {
 	fw.lastReloadMu.Lock()
 	fw.lastReload = time.Now()
 	fw.lastReloadMu.Unlock()
-	
+
 	fw.logger.Debug("file watcher loop started")
 
 	for {
