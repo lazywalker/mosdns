@@ -7,5 +7,4 @@
 docker 镜像: [docker hub](https://hub.docker.com/r/irinesistiana/mosdns)
 
 本仓库额外文档:
-
-- 上游变更说明: `docs/UPSTREAM_CHANGES.md` — 记录了对上游的auto_reload功能改动、FileWatcher 行为、`ros_addrlist` 插件说明
+- 上游变更说明: [docs/UPSTREAM_CHANGES.md](docs/UPSTREAM_CHANGES.md) — 记录了对上游的 auto_reload 功能改动、FileWatcher 行为、`ros_addrlist` 插件说明
