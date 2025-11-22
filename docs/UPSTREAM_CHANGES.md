@@ -2,11 +2,13 @@
 
 以下记录了在 mosdns 上游代码中已实现或推荐合入的功能改动与增强，便于提交 PR 或编写变更说明。
 
-1) 文件自动重载（AutoReload）
+1. 文件自动重载（AutoReload）
+
 - 在 `domain_set`、`ip_set`、`hosts` 等数据源中增加了可选的 `auto_reload: true` 配置项。
 - 当启用并提供 `files: [...]` 时，程序会监听这些文件的变更并在文件更新后触发对应的 `rebuild` 操作（例如重新构建 Matcher / IP 集合）。
 
-2) 共享 `FileWatcher` 实现
+2. 共享 `FileWatcher` 实现
+
 - 将文件监视逻辑抽象为 `plugin/data_provider/shared.FileWatcher`，集中处理 fsnotify 事件、去抖（debounce）、以及对 REMOVE/RENAME/CREATE 场景的重试与 re-watch。
 - 关键特性：
   - 去抖：避免短时间重复触发重建（示例默认 500ms）。
@@ -14,15 +16,18 @@
   - CREATE 事件：重新 `Add` 但不立刻触发 reload，等待 WRITE 事件。
   - WRITE/CHMOD：确认文件存在后触发 reload，并异步执行回调以不阻塞事件循环。
 
-3) RouterOS / 地址表集成（`ros_addrlist`）
+3. RouterOS / 地址表集成（`ros_addrlist`）
+
 - 新增或完善了 `ros_addrlist` 插件（示例 tag: `add_gfwlist`），用于将生成的 IP/CIDR 列表同步到 RouterOS(MikroTik) 的 address-list。
 - 常用配置项：`addrlist`、`server`、`user`、`passwd`、`mask4`、`mask6`、`dry_run` 等。
 - 行为：去重、按 IPv4/IPv6 分区、对 IPv4 进行可选的 CIDR 聚合（减小列表项数），然后通过 API/HTTP/导入脚本同步到 RouterOS。建议支持幂等/差分同步和 dry-run 模式。
 
-4) 测试安全性改进
+4. 测试安全性改进
+
 - 为避免测试修改仓库中示例文件，引入 `outputDir` 参数（或在测试中切换到临时目录），并将测试输出写到 `./tmp/`（并已加入 `.gitignore`）。
 
-5) 建议的后续增强（可选）
+5. 建议的后续增强（可选）
+
 - 为 `writeHosts` / 输出生成函数增加 `outputDir` 与 `dry_run` 参数，提升可测试性和可控性。
 - `ros_addrlist` 支持 `replace` / `append` / `diff-sync` 策略以适配不同路由器性能与审计需求。
 - 凭证使用 Secret 管理（环境变量 / 外部 secret store）以避免配置明文密码。
@@ -50,6 +55,42 @@
   - `mask6` (int) — IPv6 聚合掩码（例如 128 或 64）
   - `dry_run` (bool) — 仅打印将要执行的操作
 - 行为：去重 -> 聚合（可选）-> 与 RouterOS 同步（支持幂等、差分或替换模式）。
+
+## 配置与环境变量自动覆盖（`AutomaticEnv`）
+
+在 `loadConfig` 中引入了以下两行：
+
+```go
+v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+v.AutomaticEnv()
+```
+
+说明与影响：
+
+- 功能：启用 Viper 的 `AutomaticEnv` 后，程序会读取系统环境变量并将其用于覆盖配置文件中对应的键；`SetEnvKeyReplacer` 将配置键中的 `.` 替换为 `_`，从而把像 `plugins.hosts.args.auto_reload` 这样的键映射到环境变量 `PLUGINS_HOSTS_ARGS_AUTO_RELOAD`（通常在环境中使用大写）。
+- 覆盖优先级：环境变量的值会覆盖配置文件中的值（即环境变量优先）。这在容器化部署或系统服务中非常常见并且有用。
+- 命名约定：使用 `.` 分层配置时，环境变量名建议全部大写并用 `_` 分隔，例如：
+  - 配置键 `plugins.hosts.args.auto_reload` -> 环境变量 `PLUGINS_HOSTS_ARGS_AUTO_RELOAD`
+  - 配置键 `plugins.add_gfwlist.args.passwd` -> 环境变量 `PLUGINS_ADD_GFWLIST_ARGS_PASSWD`
+- 安全建议：敏感字段（如 `passwd`）可以通过环境变量注入，但应使用受限的 secret 管理（环境变量仅适合受信任的运行时或与 secret 管理结合使用），不要把明文密码提交到仓库里的示例配置文件。
+- 部署示例：
+
+在 systemd 单元中设置环境变量：
+
+```ini
+[Service]
+Environment=PLUGINS_ADD_GFWLIST_ARGS_PASSWD=SuperSecret
+Environment=PLUGINS_HOSTS_ARGS_AUTO_RELOAD=true
+```
+
+在 Docker 运行时通过 `-e` 注入：
+
+```bash
+docker run -e PLUGINS_ADD_GFWLIST_ARGS_PASSWD=SuperSecret \
+  -e PLUGINS_HOSTS_ARGS_AUTO_RELOAD=true lazywalker/mosdns
+```
+
+- 测试建议：增加配置覆盖测试，验证在设置相应环境变量时，`v.Unmarshal` 后的 `Config` 结构体得到来自环境的值；并在 CI 中展示一个示例（使用 `env` 注入）以避免回归。
 
 ## 测试与 CI 建议
 
