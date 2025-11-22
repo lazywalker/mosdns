@@ -67,28 +67,11 @@ v.AutomaticEnv()
 
 说明与影响：
 
-- 功能：启用 Viper 的 `AutomaticEnv` 后，程序会读取系统环境变量并将其用于覆盖配置文件中对应的键；`SetEnvKeyReplacer` 将配置键中的 `.` 替换为 `_`，从而把像 `plugins.hosts.args.auto_reload` 这样的键映射到环境变量 `PLUGINS_HOSTS_ARGS_AUTO_RELOAD`（通常在环境中使用大写）。
-- 覆盖优先级：环境变量的值会覆盖配置文件中的值（即环境变量优先）。这在容器化部署或系统服务中非常常见并且有用。
-- 命名约定：使用 `.` 分层配置时，环境变量名建议全部大写并用 `_` 分隔，例如：
   - 配置键 `plugins.hosts.args.auto_reload` -> 环境变量 `PLUGINS_HOSTS_ARGS_AUTO_RELOAD`
   - 配置键 `plugins.add_gfwlist.args.passwd` -> 环境变量 `PLUGINS_ADD_GFWLIST_ARGS_PASSWD`
-- 安全建议：敏感字段（如 `passwd`）可以通过环境变量注入，但应使用受限的 secret 管理（环境变量仅适合受信任的运行时或与 secret 管理结合使用），不要把明文密码提交到仓库里的示例配置文件。
-- 部署示例：
+ 
 
-在 systemd 单元中设置环境变量：
-
-```ini
-[Service]
-Environment=PLUGINS_ADD_GFWLIST_ARGS_PASSWD=SuperSecret
-Environment=PLUGINS_HOSTS_ARGS_AUTO_RELOAD=true
-```
-
-在 Docker 运行时通过 `-e` 注入：
-
-```bash
-docker run -e PLUGINS_ADD_GFWLIST_ARGS_PASSWD=SuperSecret \
-  -e PLUGINS_HOSTS_ARGS_AUTO_RELOAD=true lazywalker/mosdns
-```
+安全与部署示例：详见 `docs/SECURE_SECRETS.md`，其中包含 Docker Secrets、Kubernetes Secret、Vault 与云 Secret Manager 的用法示例与最佳实践。
 
 - 测试建议：增加配置覆盖测试，验证在设置相应环境变量时，`v.Unmarshal` 后的 `Config` 结构体得到来自环境的值；并在 CI 中展示一个示例（使用 `env` 注入）以避免回归。
 
@@ -99,3 +82,29 @@ docker run -e PLUGINS_ADD_GFWLIST_ARGS_PASSWD=SuperSecret \
   - `ros_addrlist` 的同步逻辑（使用 HTTP mock 或 RouterOS API mock）。
 - 集成测试：在 CI 中运行产生器但把 `outputDir` 定向到 `./tmp`，并断言仓库根目录的示例文件未被修改。
 - CI：在 PR 检查中运行 `go test ./...` 与 Node 测试（如有），并阻止修改仓库示例文件被提交。
+
+## 插件环境覆盖：`env_override.go` 的改动说明
+
+- 新增 helper：`applyPluginEnvOverrides(cfg *Config)`（实现文件：`coremain/env_override.go`）。该函数在配置通过 Viper `v.Unmarshal` 反序列化之后运行，用以把进程环境中的 `PLUGINS_*` 变量注入到 `cfg.Plugins[*].Args` 中。
+
+- 支持的环境变量格式（示例）：
+
+  - `PLUGINS_<IDENT>_ARGS_<KEY_PATH>=<value>`
+
+  其中 `<IDENT>` 为插件的 `Tag`（优先）或 `Type`，`<KEY_PATH>` 为下划线分隔的字段路径，会被映射为插件 args 下的嵌套键。例如：
+
+  - `PLUGINS_ADD_GFWLIST_ARGS_PASSWD=secret`
+  - `PLUGINS_MYTAG_ARGS_AUTO_RELOAD=true`
+
+- 行为细节：
+  - 如果目标插件的 `Args` 为空，helper 会初始化为 `map[string]any` 并写入值。
+  - 为兼容不同消费方式，helper 会同时写入“点表示法”嵌套键（例如 `a.b.c`）和下划线连接键（例如 `a_b_c`）。
+  - 值解析：会尽可能把字符串解析为布尔、整数或浮点数；解析失败则保留原字符串。
+
+- 局限性与注意事项：
+  - 当前实现仅把值写入 `map[string]any`，并不自动将该 map 解码为插件可能期望的强类型 args 结构。若某些插件依赖结构体类型，需要在注入后增加 map→struct 的解码步骤（例如使用 `mapstructure` 或 JSON round-trip）。
+  - 仅扫描以 `PLUGINS_` 前缀的环境变量；命名应配合 `v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))` 与 `v.AutomaticEnv()` 使用时的约定。
+
+- 调用位置与测试：该 helper 应在 `loadConfig`（`run.go`）中 v.Unmarshal 之后调用。相关单元测试在 `coremain/run_test.go`（示例：`TestLoadConfig_PluginPasswdEnvOverride`）。
+
+- 与安全实践的关系：对于敏感字段（如 `passwd`），优先使用受管 secret 方案（参见 `docs/SECURE_SECRETS.md`），不要把明文凭证直接写入仓库或 CI 日志。

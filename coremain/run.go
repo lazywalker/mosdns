@@ -161,5 +161,12 @@ func loadConfig(filePath string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
+	// Apply environment variable overrides for plugins (support mapping into
+	// elements inside the Plugins slice). This allows env vars like
+	// PLUGINS_MYTAG_ARGS_AUTO_RELOAD=true to override plugin args by tag.
+	if err := applyPluginEnvOverrides(cfg); err != nil {
+		return nil, "", fmt.Errorf("failed to apply plugin env overrides: %w", err)
+	}
+
 	return cfg, v.ConfigFileUsed(), nil
 }
