@@ -95,6 +95,10 @@ v.AutomaticEnv()
 
   - `PLUGINS_ADD_GFWLIST_ARGS_PASSWD=secret`
   - `PLUGINS_MYTAG_ARGS_AUTO_RELOAD=true`
+  - 用于开发调试的例子：
+  ```
+  PLUGINS_TCP_SERVER_ARGS_LISTEN=:54 PLUGINS_UDP_SERVER_ARGS_LISTEN=:54 LOG_PRODUCTION=false LOG_LEVEL=debug ./mosdns start -d ../lazymosdns/etc
+  ```
 
 - 行为细节：
   - 如果目标插件的 `Args` 为空，helper 会初始化为 `map[string]any` 并写入值。
