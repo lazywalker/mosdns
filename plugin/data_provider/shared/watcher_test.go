@@ -1,3 +1,4 @@
+// scheduleReloadIfReady tests are below with other watcher tests.
 package shared
 
 import (
@@ -9,6 +10,79 @@ import (
 
 	"go.uber.org/zap"
 )
+
+// scheduleReloadIfReady unit tests
+func TestScheduleReloadInvokesCallback(t *testing.T) {
+	tmp, err := os.CreateTemp("", "watcher-test-*.txt")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+
+	called := make(chan struct{}, 1)
+	fw := NewFileWatcher(zap.NewNop(), func(filename string) error {
+		if filename != path {
+			t.Errorf("unexpected filename: %s", filename)
+		}
+		called <- struct{}{}
+		return nil
+	}, 0)
+
+	// allow immediate reload
+	fw.lastReloadMu.Lock()
+	fw.lastReload = time.Now().Add(-time.Hour)
+	fw.lastReloadMu.Unlock()
+
+	// ensure file exists
+	f, _ := os.Create(path)
+	f.WriteString("x")
+	f.Close()
+
+	fw.scheduleReloadIfReady(path, 10*time.Millisecond)
+
+	select {
+	case <-called:
+		// OK
+	case <-time.After(500 * time.Millisecond):
+		t.Fatalf("scheduled reload didn't invoke callback")
+	}
+}
+
+func TestScheduleReloadRespectsDebounce(t *testing.T) {
+	tmp, err := os.CreateTemp("", "watcher-test-*.txt")
+	if err != nil {
+		t.Fatalf("create temp: %v", err)
+	}
+	path := tmp.Name()
+	tmp.Close()
+	defer os.Remove(path)
+
+	called := make(chan struct{}, 1)
+	fw := NewFileWatcher(zap.NewNop(), func(filename string) error {
+		called <- struct{}{}
+		return nil
+	}, 200*time.Millisecond)
+
+	// set lastReload to now to force debounce to block
+	fw.lastReloadMu.Lock()
+	fw.lastReload = time.Now()
+	fw.lastReloadMu.Unlock()
+
+	f, _ := os.Create(path)
+	f.WriteString("x")
+	f.Close()
+
+	fw.scheduleReloadIfReady(path, 10*time.Millisecond)
+
+	select {
+	case <-called:
+		t.Fatalf("callback should not have been invoked due to debounce")
+	case <-time.After(250 * time.Millisecond):
+		// OK - no invocation
+	}
+}
 
 // TestFileWatcher_BasicReload tests that the file watcher detects simple file writes
 func TestFileWatcher_BasicReload(t *testing.T) {

@@ -121,6 +121,11 @@ func (fw *FileWatcher) loop() {
 					for i := 0; i < 5; i++ {
 						if err := fw.watcher.Add(filename); err == nil {
 							fw.logger.Info("successfully re-added file to watch list", zap.String("file", filename))
+							// Schedule a delayed reload after re-adding. Some platforms
+							// (e.g. Alpine with atomic file replacement) may not emit
+							// a WRITE event; scheduleReloadIfReady will check file
+							// existence and trigger the callback if appropriate.
+							fw.scheduleReloadIfReady(filename, 120*time.Millisecond)
 							return
 						}
 						fw.logger.Debug("failed to re-add file, retrying", zap.String("file", filename), zap.Int("attempt", i+1))
@@ -143,6 +148,10 @@ func (fw *FileWatcher) loop() {
 					fw.logger.Error("failed to re-add file to watch list", zap.String("file", event.Name), zap.Error(err))
 				} else {
 					fw.logger.Debug("re-added file to watch list after create", zap.String("file", event.Name))
+					// After a CREATE, the file might be written immediately or soon
+					// after. Schedule a delayed reload to catch cases where no
+					// WRITE event is emitted but the file now contains new data.
+					fw.scheduleReloadIfReady(event.Name, 120*time.Millisecond)
 				}
 				// Don't trigger reload yet - wait for WRITE event
 				continue
@@ -211,4 +220,40 @@ func (fw *FileWatcher) Close() error {
 		return fw.watcher.Close()
 	}
 	return nil
+}
+
+// scheduleReloadIfReady waits for the given delay, verifies the file exists,
+// checks debounce/lastReload and invokes the configured callback if allowed.
+// It runs the callback in a goroutine so it doesn't block the caller.
+func (fw *FileWatcher) scheduleReloadIfReady(filename string, delay time.Duration) {
+	go func() {
+		time.Sleep(delay)
+
+		// If file doesn't exist yet, don't reload
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			fw.logger.Debug("scheduled reload: file does not exist, skipping", zap.String("file", filename))
+			return
+		}
+
+		// debounce check
+		fw.lastReloadMu.Lock()
+		shouldReload := time.Since(fw.lastReload) >= fw.debounce
+		if shouldReload {
+			fw.lastReload = time.Now()
+		}
+		fw.lastReloadMu.Unlock()
+
+		if !shouldReload {
+			fw.logger.Debug("scheduled reload skipped due to debounce", zap.String("file", filename))
+			return
+		}
+
+		fw.logger.Info("scheduled reload: invoking callback", zap.String("file", filename))
+		start := time.Now()
+		if err := fw.cb(filename); err != nil {
+			fw.logger.Error("scheduled auto-reload failed", zap.String("filename", filename), zap.Error(err))
+		} else {
+			fw.logger.Info("scheduled auto-reload completed", zap.String("filename", filename), zap.Any("duration", time.Since(start)))
+		}
+	}()
 }
