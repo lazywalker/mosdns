@@ -32,6 +32,13 @@ type FileWatcher struct {
 	lastReload   time.Time
 }
 
+// DefaultScheduledReloadDelay is the default delay used when scheduling a
+// delayed reload after re-adding a file to the watch list. This delay is a
+// short pause to allow atomic file replacement and for the updated file to
+// be fully available for reading. It can be tuned if your environment needs
+// a longer or shorter window.
+const DefaultScheduledReloadDelay = 250 * time.Millisecond
+
 // NewFileWatcher constructs a FileWatcher.
 //
 // logger: a zap logger used for debug/info/error messages.
@@ -125,7 +132,7 @@ func (fw *FileWatcher) loop() {
 							// (e.g. Alpine with atomic file replacement) may not emit
 							// a WRITE event; scheduleReloadIfReady will check file
 							// existence and trigger the callback if appropriate.
-							fw.scheduleReloadIfReady(filename, 120*time.Millisecond)
+							fw.scheduleReloadIfReady(filename, DefaultScheduledReloadDelay)
 							return
 						}
 						fw.logger.Debug("failed to re-add file, retrying", zap.String("file", filename), zap.Int("attempt", i+1))
@@ -151,7 +158,7 @@ func (fw *FileWatcher) loop() {
 					// After a CREATE, the file might be written immediately or soon
 					// after. Schedule a delayed reload to catch cases where no
 					// WRITE event is emitted but the file now contains new data.
-					fw.scheduleReloadIfReady(event.Name, 120*time.Millisecond)
+					fw.scheduleReloadIfReady(event.Name, DefaultScheduledReloadDelay)
 				}
 				// Don't trigger reload yet - wait for WRITE event
 				continue

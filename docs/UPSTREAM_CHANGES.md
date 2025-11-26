@@ -130,3 +130,15 @@ v.AutomaticEnv()
 - 测试与文档：已添加单元测试 `mlog/logger_test.go` （覆盖 `timestamp`、`iso8601`、`rfc3339` 和 `custom`），并新增文档 `docs/README_LOG.md` 描述配置选项与示例。
 
 - 与现有日志与运维实践的关系：如果你希望在仓库中默认使用可读时间戳（例如 `iso8601`），可以将默认值从 `timestamp` 改为 `iso8601`；目前默认保持向后兼容的数值时间戳。
+
+## FileWatcher：在重新添加 / CREATE 后调度重载（改进原子替换处理）
+
+- 问题：部分平台（例如 Alpine 3.22）或采用原子替换的编辑器/工具在替换文件时可能只产生 REMOVE/RENAME 和/或 CREATE 事件，而没有随后的 WRITE。此前 watcher 虽会重新添加文件，但不会触发 reload，导致更新被忽略。
+
+- 解决方案：当因 REMOVE/RENAME 重新添加文件或发生 CREATE 时，watcher 会安排一次短延迟的重载，流程为：
+  - 等待一段短延迟以让文件变得可用；
+  - 验证文件存在；
+  - 遵守已有的 debounce 窗口；
+  - 然后调用配置的重载回调。
+
+- 默认延迟：默认调度重载延迟为 250ms（常量：`plugin/data_provider/shared.DefaultScheduledReloadDelay`），该值兼顾常见原子替换场景与较短响应时间。若环境需要不同时序，可将此延迟暴露为 `FileWatcher` 构造函数的可配项。

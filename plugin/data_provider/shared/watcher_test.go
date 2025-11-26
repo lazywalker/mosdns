@@ -194,6 +194,10 @@ func TestFileWatcher_AtomicReplace(t *testing.T) {
 	firstReloadCount := reloadCount
 	mu.Unlock()
 
+	// Wait enough time for the debounce window to pass so a subsequent write
+	// will produce its own reload (the scheduled reload may update lastReload).
+	time.Sleep(150 * time.Millisecond)
+
 	// Now test that subsequent writes still work (this is the key test for the bug)
 	// This would fail with the old implementation because the file is no longer watched
 	if err := os.WriteFile(testFile, []byte("content after atomic replace"), 0644); err != nil {
